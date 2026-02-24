@@ -13,3 +13,5 @@ Why do you need a proxy?
 
 Is authorization required?
 - No
+Font
+- Support Cyrillic and Latin
