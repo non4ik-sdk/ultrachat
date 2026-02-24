@@ -1,8 +1,16 @@
 "use strict";
 
-const TWITCH_WS = "wss://irc-ws.chat.twitch.tv:443";
-const RECONNECT_DELAY = 3000;
-const MAX_SCROLL_BUFFER_PX = 4000;
+const CFG = window.APP_CONFIG;
+
+const TWITCH_WS = CFG.twitch.ws;
+const RECONNECT_DELAY = CFG.twitch.reconnectDelay;
+const MAX_SCROLL_BUFFER_PX = CFG.chat.maxScrollBufferPx;
+
+const API_7TV_GLOBAL = CFG.sevenTV.globalApi;
+const API_7TV_USER = CFG.sevenTV.userApi;
+const CF_PROXY = CFG.proxy;
+
+const ENABLE_7TV = CFG.sevenTV.enabled;
 
 const messagesEl = document.getElementById("messages");
 const chatEl = document.getElementById("chat");
@@ -10,22 +18,174 @@ const chatEl = document.getElementById("chat");
 let ws = null;
 let reconnectTimer = null;
 
-const TWITCH_CHANNEL = window.APP_CONFIG && window.APP_CONFIG.channel;
+const TWITCH_CHANNEL = CFG.channel;
+const BADGE_ICONS = { mod: "🛡️", vip: "💎", sub: "🚀" };
 
-const BADGE_ICONS = { mod: "🛡️", vip: "💎", sub: "🚀"};
+let globalLoaded = false;
+let sevenTVMap = {};
+let emoteCache = {};
+let channelLoaded = {};
 
-function addMessageSafe(username, badges, text, color) {
+// utils
+
+function log() { try { console.log.apply(console, arguments); } catch (e) {} }
+function warn() { try { console.warn.apply(console, arguments); } catch (e) {} }
+function error() { try { console.error.apply(console, arguments); } catch (e) {} }
+
+function proxify(url) {
+  if (!url) return "";
+  url = url.replace(/^\/\//, "https://");
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  return CF_PROXY + encodeURIComponent(url);
+}
+
+function pickEmoteFileUrl(host) {
+  if (!host || !Array.isArray(host.files)) return "";
+  for (let i = 0; i < host.files.length; i++) {
+    const f = host.files[i];
+    if (typeof f.name === "string" && f.name.indexOf("1x") === 0) {
+      return host.url + "/" + f.name;
+    }
+  }
+  return host.url + "/" + host.files[0].name;
+}
+
+// 7TV
+
+async function loadGlobal7TV() {
+  if (!ENABLE_7TV) return;
+
+  try {
+    const res = await fetch(proxify(API_7TV_GLOBAL));
+    const json = await res.json();
+
+    if (!json || !Array.isArray(json.emotes)) {
+      warn("[7TV] No global emotes");
+      return;
+    }
+
+    for (let i = 0; i < json.emotes.length; i++) {
+      const em = json.emotes[i];
+      if (!em.name || !em.data || !em.data.host) continue;
+
+      const url = proxify(pickEmoteFileUrl(em.data.host));
+
+      sevenTVMap[em.name] = {
+        url: url,
+        source: "global"
+      };
+    }
+
+    globalLoaded = true;
+    log("[7TV] Global loaded:", Object.keys(sevenTVMap).length);
+  } catch (e) {
+    error("[7TV] Global failed:", e);
+  }
+}
+
+async function loadChannel7TV(twitchId) {
+  if (!ENABLE_7TV || !twitchId || channelLoaded[twitchId]) return;
+
+  channelLoaded[twitchId] = true;
+
+  try {
+    const res = await fetch(proxify(API_7TV_USER + twitchId));
+    const json = await res.json();
+
+    if (!json || !json.emote_set || !Array.isArray(json.emote_set.emotes)) {
+      warn("[7TV] No channel emotes");
+      return;
+    }
+
+    const emotes = json.emote_set.emotes;
+
+    for (let i = 0; i < emotes.length; i++) {
+      const em = emotes[i];
+      if (!em.name || !em.data || !em.data.host) continue;
+
+      const url = proxify(pickEmoteFileUrl(em.data.host));
+
+      sevenTVMap[em.name] = {
+        url: url,
+        source: "channel",
+        channelId: twitchId
+      };
+    }
+
+    log("[7TV] Channel loaded:", twitchId);
+  } catch (e) {
+    error("[7TV] Channel failed:", e);
+  }
+}
+
+// Link highlighting
+
+function appendToken(frag, token, roomId) {
+
+  // whitespace
+  if (/^\s+$/.test(token)) {
+    frag.appendChild(document.createTextNode(token));
+    return;
+  }
+
+  // URL detect
+  const urlMatch = token.match(/^(https?:\/\/[^\s]+)$/i);
+  if (urlMatch) {
+    const a = document.createElement("a");
+    a.href = token;
+    a.textContent = token;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.style.color = "#4aa3ff";
+    frag.appendChild(a);
+    return;
+  }
+
+  // 7TV emote
+  if (ENABLE_7TV && sevenTVMap[token]) {
+    const em = sevenTVMap[token];
+
+    if (!emoteCache[token]) {
+      const img = document.createElement("img");
+      img.src = em.url;
+      img.alt = token;
+      img.className = "emote";
+      img.style.height = "1em";
+      img.style.verticalAlign = "middle";
+      img.loading = "lazy";
+      emoteCache[token] = img;
+    }
+
+    frag.appendChild(emoteCache[token].cloneNode(true));
+    return;
+  }
+
+  frag.appendChild(document.createTextNode(token));
+}
+
+// Chat rendering 
+
+function addMessageSafe(username, badges, text, color, roomId) {
+
   const div = document.createElement("div");
   div.className = "msg";
 
   const nameSpan = document.createElement("span");
   nameSpan.style.color = color || "#f5d000";
-  nameSpan.textContent = badges + username;
+  nameSpan.textContent = badges + username + ": ";
+  div.appendChild(nameSpan);
 
   const textSpan = document.createElement("span");
-  textSpan.textContent = " + " + text;
+  const frag = document.createDocumentFragment();
 
-  div.appendChild(nameSpan);
+  const tokens = text.split(/(\s+)/);
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (!tokens[i]) continue;
+    appendToken(frag, tokens[i], roomId);
+  }
+
+  textSpan.appendChild(frag);
   div.appendChild(textSpan);
   messagesEl.appendChild(div);
 
@@ -43,16 +203,15 @@ function systemMessage(text) {
   div.style.color = "#ffd000ff";
   div.textContent = text;
   messagesEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
 }
+
+// -------------------- Twitch --------------------
 
 function connectTwitch() {
   if (!TWITCH_CHANNEL) {
     systemMessage("Channel not set");
     return;
   }
-
-  if (ws) ws.close();
 
   ws = new WebSocket(TWITCH_WS);
 
@@ -61,60 +220,45 @@ function connectTwitch() {
     ws.send("PASS SCHMOOPIIE");
     ws.send("NICK justinfan" + Math.floor(Math.random() * 100000));
     ws.send("JOIN #" + TWITCH_CHANNEL);
-    systemMessage("Connected to Twitch chat");
+    systemMessage("Connected");
   };
 
   ws.onmessage = function (event) {
     const lines = event.data.split("\r\n");
-    for (let i = 0; i < lines.length; i++) {
-      parseMessage(lines[i]);
-    }
+    for (let i = 0; i < lines.length; i++) parseMessage(lines[i]);
   };
 
   ws.onclose = function () {
-    systemMessage("Disconnected. Reconnecting...");
-    if (!reconnectTimer) {
-      reconnectTimer = setTimeout(function () {
-        reconnectTimer = null;
-        connectTwitch();
-      }, RECONNECT_DELAY);
-    }
-  };
-
-  ws.onerror = function () {
-    systemMessage("WebSocket error");
+    systemMessage("Reconnecting...");
+    reconnectTimer = setTimeout(function () {
+      connectTwitch();
+    }, RECONNECT_DELAY);
   };
 }
 
 function parseMessage(raw) {
   if (!raw) return;
 
-  if (raw.startsWith("PING")) {
+  if (raw.indexOf("PING") === 0) {
     ws.send("PONG :tmi.twitch.tv");
     return;
   }
 
-  if (raw.indexOf("PRIVMSG") !== -1) {
-    parsePrivMsg(raw);
-  }
+  if (raw.indexOf("PRIVMSG") !== -1) parsePrivMsg(raw);
 }
 
 function parseTags(tagStr) {
   const tags = {};
   const parts = tagStr.split(";");
-
   for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    const eq = p.indexOf("=");
-    if (eq !== -1) {
-      tags[p.slice(0, eq)] = p.slice(eq + 1);
-    }
+    const eq = parts[i].indexOf("=");
+    if (eq !== -1) tags[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);
   }
-
   return tags;
 }
 
 function parsePrivMsg(raw) {
+
   let tags = {};
   let rest = raw;
 
@@ -127,16 +271,17 @@ function parsePrivMsg(raw) {
   if (rest[0] === ":") rest = rest.slice(1);
 
   const parts = rest.split(" ");
-  const userPart = parts[0];
-  const command = parts[1];
+  if (parts[1] !== "PRIVMSG") return;
 
-  if (command !== "PRIVMSG") return;
-
-  const username = tags["display-name"] || userPart.split("!")[0];
+  const username = tags["display-name"] || parts[0].split("!")[0];
   const msgIndex = rest.indexOf(" :");
   if (msgIndex === -1) return;
 
   const message = rest.slice(msgIndex + 2);
+
+  const roomId = tags["room-id"];
+
+  if (ENABLE_7TV && roomId) loadChannel7TV(roomId);
 
   let badges = "";
   if (tags.mod === "1") badges += BADGE_ICONS.mod;
@@ -144,8 +289,12 @@ function parsePrivMsg(raw) {
   if (tags.sub === "1") badges += BADGE_ICONS.sub;
   if (badges) badges += " ";
 
-  addMessageSafe(username, badges, message, tags.color || "#f5d000");
+  addMessageSafe(username, badges, message, tags.color, roomId);
 }
 
-systemMessage("Connecting to Twitch chat...");
-connectTwitch();
+// init
+
+systemMessage("Connecting to Twitch...");
+loadGlobal7TV().then(function () {
+  connectTwitch();
+});
