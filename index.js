@@ -8,7 +8,9 @@ const MAX_SCROLL_BUFFER_PX = CFG.chat.maxScrollBufferPx;
 
 const API_7TV_GLOBAL = CFG.sevenTV.globalApi;
 const API_7TV_USER = CFG.sevenTV.userApi;
-const CF_PROXY = CFG.proxy;
+
+const CF_PROXY = typeof CFG.proxy === "string" ? CFG.proxy.trim() : "";
+const USE_PROXY = CF_PROXY !== "";
 
 const ENABLE_7TV = CFG.sevenTV.enabled;
 
@@ -27,20 +29,23 @@ let emoteCache = {};
 let channelLoaded = {};
 
 // utils
-
 function log() { try { console.log.apply(console, arguments); } catch (e) {} }
 function warn() { try { console.warn.apply(console, arguments); } catch (e) {} }
 function error() { try { console.error.apply(console, arguments); } catch (e) {} }
 
 function proxify(url) {
   if (!url) return "";
+
   url = url.replace(/^\/\//, "https://");
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+
+  if (!USE_PROXY) return url;
+
   return CF_PROXY + encodeURIComponent(url);
 }
 
 function pickEmoteFileUrl(host) {
-  if (!host || !Array.isArray(host.files)) return "";
+  if (!host || !Array.isArray(host.files) || !host.files.length) return "";
   for (let i = 0; i < host.files.length; i++) {
     const f = host.files[i];
     if (typeof f.name === "string" && f.name.indexOf("1x") === 0) {
@@ -51,12 +56,17 @@ function pickEmoteFileUrl(host) {
 }
 
 // 7TV
-
 async function loadGlobal7TV() {
   if (!ENABLE_7TV) return;
 
   try {
-    const res = await fetch(proxify(API_7TV_GLOBAL));
+    const url = USE_PROXY ? proxify(API_7TV_GLOBAL) : API_7TV_GLOBAL;
+    const res = await fetch(url);
+    if (!res.ok) {
+      warn("[7TV] Global HTTP error:", res.status);
+      return;
+    }
+
     const json = await res.json();
 
     if (!json || !Array.isArray(json.emotes)) {
@@ -68,10 +78,13 @@ async function loadGlobal7TV() {
       const em = json.emotes[i];
       if (!em.name || !em.data || !em.data.host) continue;
 
-      const url = proxify(pickEmoteFileUrl(em.data.host));
+      const rawUrl = pickEmoteFileUrl(em.data.host);
+      if (!rawUrl) continue;
+
+      const finalUrl = USE_PROXY ? proxify(rawUrl) : rawUrl;
 
       sevenTVMap[em.name] = {
-        url: url,
+        url: finalUrl,
         source: "global"
       };
     }
@@ -89,7 +102,15 @@ async function loadChannel7TV(twitchId) {
   channelLoaded[twitchId] = true;
 
   try {
-    const res = await fetch(proxify(API_7TV_USER + twitchId));
+    const apiUrl = API_7TV_USER + twitchId;
+    const url = USE_PROXY ? proxify(apiUrl) : apiUrl;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      warn("[7TV] Channel HTTP error:", res.status);
+      return;
+    }
+
     const json = await res.json();
 
     if (!json || !json.emote_set || !Array.isArray(json.emote_set.emotes)) {
@@ -103,10 +124,13 @@ async function loadChannel7TV(twitchId) {
       const em = emotes[i];
       if (!em.name || !em.data || !em.data.host) continue;
 
-      const url = proxify(pickEmoteFileUrl(em.data.host));
+      const rawUrl = pickEmoteFileUrl(em.data.host);
+      if (!rawUrl) continue;
+
+      const finalUrl = USE_PROXY ? proxify(rawUrl) : rawUrl;
 
       sevenTVMap[em.name] = {
-        url: url,
+        url: finalUrl,
         source: "channel",
         channelId: twitchId
       };
@@ -118,17 +142,14 @@ async function loadChannel7TV(twitchId) {
   }
 }
 
-// Link highlighting
+// Link + emote rendering
+function appendToken(frag, token) {
 
-function appendToken(frag, token, roomId) {
-
-  // whitespace
   if (/^\s+$/.test(token)) {
     frag.appendChild(document.createTextNode(token));
     return;
   }
 
-  // URL detect
   const urlMatch = token.match(/^(https?:\/\/[^\s]+)$/i);
   if (urlMatch) {
     const a = document.createElement("a");
@@ -141,7 +162,6 @@ function appendToken(frag, token, roomId) {
     return;
   }
 
-  // 7TV emote
   if (ENABLE_7TV && sevenTVMap[token]) {
     const em = sevenTVMap[token];
 
@@ -163,8 +183,7 @@ function appendToken(frag, token, roomId) {
   frag.appendChild(document.createTextNode(token));
 }
 
-// Chat rendering 
-
+// Chat rendering
 function addMessageSafe(username, badges, text, color, roomId) {
 
   const div = document.createElement("div");
@@ -182,7 +201,7 @@ function addMessageSafe(username, badges, text, color, roomId) {
 
   for (let i = 0; i < tokens.length; i++) {
     if (!tokens[i]) continue;
-    appendToken(frag, tokens[i], roomId);
+    appendToken(frag, tokens[i]);
   }
 
   textSpan.appendChild(frag);
@@ -205,7 +224,7 @@ function systemMessage(text) {
   messagesEl.appendChild(div);
 }
 
-// -------------------- Twitch --------------------
+// Twitch
 
 function connectTwitch() {
   if (!TWITCH_CHANNEL) {
@@ -278,7 +297,6 @@ function parsePrivMsg(raw) {
   if (msgIndex === -1) return;
 
   const message = rest.slice(msgIndex + 2);
-
   const roomId = tags["room-id"];
 
   if (ENABLE_7TV && roomId) loadChannel7TV(roomId);
@@ -293,7 +311,6 @@ function parsePrivMsg(raw) {
 }
 
 // init
-
 systemMessage("Connecting to Twitch...");
 loadGlobal7TV().then(function () {
   connectTwitch();
