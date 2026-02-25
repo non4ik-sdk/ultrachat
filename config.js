@@ -1,7 +1,7 @@
 "use strict";
 
 window.APP_CONFIG = {
-  channel: "pwgood", // Name of Twitch channel (Not full url)
+  channel: "twitch", // Name of Twitch channel (Not full url)
 
   twitch: {
     ws: "wss://irc-ws.chat.twitch.tv:443",
@@ -19,4 +19,5 @@ window.APP_CONFIG = {
   },
 
   proxy: "https://cp.non4ik.workers.dev/?url=" // I use my simple CF Worker https://github.com/non4ik-sdk/CacheProxy
+
 };
