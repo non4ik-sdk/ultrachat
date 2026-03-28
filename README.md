@@ -9,9 +9,11 @@ Simple Ultrakill styled Twitch chat for stream
 7. Reload widget.
 
 Why do you need a proxy?
-- **If you're in Russia**, you'll need to use a **proxy to load emotes**. If you don't need this, just leave this line blank.
+- **If you're in Russia**, you'll need to use a **proxy to load 7tv emotes**. If you don't need this, just leave this line blank.
 
 Is authorization required?
 - No
-Font
+  
+Font?
+
 - Support Cyrillic and Latin
