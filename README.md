@@ -8,7 +8,7 @@ Simple Ultrakill styled Twitch chat for stream
 6. Setup proxy or use my [CF Worker](https://github.com/non4ik-sdk/CacheProxy).
 7. Reload widget.
 
-Why do you need a proxy?
+Why do you need a proxy (or other tech like vpn, zapret)?
 - **If you're in Russia**, you'll need to use a **proxy to load 7tv emotes**. If you don't need this, just leave this line blank.
 
 Is authorization required?
